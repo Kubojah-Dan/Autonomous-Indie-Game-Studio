@@ -1,0 +1,53 @@
+# QuantumForge AI :: docker-compose
+# Bring the whole studio up with:  docker-compose up --build
+# then open http://localhost:3000
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: qf-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - qf-mongo-data:/data/db
+
+  mcp-chrome:
+    build: ./mcp-chrome
+    container_name: qf-mcp-chrome
+    ports:
+      - "8811:8811"
+    environment:
+      PYTHONUNBUFFERED: "1"
+
+  backend:
+    build: ./backend
+    container_name: qf-backend
+    depends_on:
+      - mongo
+      - mcp-chrome
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: quantumforge
+      CORS_ORIGINS: "*"
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      MCP_CHROME_URL: http://mcp-chrome:8811
+      GENERATED_GAMES_DIR: /app/generated-games
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./generated-games:/app/generated-games
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REACT_APP_BACKEND_URL: http://localhost:8001
+    container_name: qf-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  qf-mongo-data:

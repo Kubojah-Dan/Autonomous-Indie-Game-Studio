@@ -1,0 +1,40 @@
+# ==== QuantumForge AI :: root .gitignore ====
+# dependencies & build outputs
+node_modules/
+frontend/node_modules/
+frontend/build/
+frontend/coverage/
+build/
+dist/
+*.egg-info/
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+backend/.venv/
+mcp-chrome/.venv/
+.pytest_cache/
+.coverage
+
+# environment & secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# generated games (keep .gitkeep only)
+generated-games/*/
+!generated-games/.gitkeep
+
+# IDEs & OS files
+.idea/
+.vscode/
+.DS_Store
+*.log
