@@ -21,9 +21,9 @@ def _mk_llm(model: str, env_key: str, temperature: float = 0.3) -> LLM:
 
 
 def build_agents():
-    # Use 8b model for light text tasks (30k TPM quota) and 70b model for code & core mechanics
+    # Use 8b model (500,000 Tokens Per Day quota) to prevent hitting 70b daily limit (100,000 TPD)
     groq_fast = _mk_llm(GROQ_8B, "GROQ_API_KEY", 0.3)
-    groq_heavy = _mk_llm(GROQ_70B, "GROQ_API_KEY", 0.2)
+    groq_heavy = _mk_llm(GROQ_8B, "GROQ_API_KEY", 0.2)
     
     # Try Gemini if key is provided and non-empty
     gemini_key = os.getenv("GEMINI_API_KEY", "")
@@ -226,17 +226,28 @@ def build_tasks(idea: str, agents: Dict[str, Agent]):
     ]
 
 def _run_with_retry(task, log, agent_name, retries: int = 3):
-    """Run a CrewAI task with backoff on rate-limit errors."""
+    """Run a CrewAI task with model fallback on rate-limit errors."""
     for attempt in range(retries + 1):
         try:
             return task.execute_sync()
         except Exception as e:
             msg = str(e)
-            if ("RateLimit" in msg or "429" in msg or "rate limit" in msg.lower()) and attempt < retries:
-                wait_s = 8 + attempt * 6
-                log(agent_name, f"[warn] rate limited — retrying in {wait_s}s", level="warn")
-                time.sleep(wait_s)
-                continue
+            if ("RateLimit" in msg or "429" in msg or "rate limit" in msg.lower()):
+                # Immediately switch task agent's LLM to GROQ_8B (500k TPD quota)
+                if hasattr(task, "agent") and task.agent and hasattr(task.agent, "llm"):
+                    log(agent_name, f"[warn] rate limited — switching to fallback model {GROQ_8B}", level="warn")
+                    task.agent.llm = _mk_llm(GROQ_8B, "GROQ_API_KEY", 0.2)
+                    try:
+                        time.sleep(1)
+                        return task.execute_sync()
+                    except Exception as fallback_err:
+                        log(agent_name, f"[warn] fallback execution failed: {fallback_err}", level="warn")
+
+                if attempt < retries:
+                    wait_s = 5 + attempt * 5
+                    log(agent_name, f"[warn] rate limited — retrying in {wait_s}s", level="warn")
+                    time.sleep(wait_s)
+                    continue
             raise
 
 
@@ -360,40 +371,124 @@ class ForgePipeline:
 
 
 def _fallback_game_html(idea: str) -> str:
-    """Guarantees a playable prototype even if the LLM code stage fails."""
+    """Generates a dynamic, interactive Phaser 3 prototype customized to the user's prompt idea."""
     safe_idea = idea.replace('"', "'")[:80]
-    return (
-        "<!DOCTYPE html>\n<html><head><meta charset='utf-8'/>"
-        "<title>QuantumForge Prototype</title>"
-        "<script src='https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js'></script>"
-        "<style>body{margin:0;background:#0A0A0F;color:#00FF41;font-family:monospace}</style>"
-        "</head><body>"
-        "<script>"
-        "class Main extends Phaser.Scene{"
-        "constructor(){super('m')}"
-        "create(){"
-        f"this.add.text(20,20,'PROTOTYPE :: {safe_idea}',{{color:'#00FF41',fontFamily:'monospace',fontSize:'18px'}});"
-        "this.p=this.add.rectangle(400,500,32,32,0x00ff41);"
-        "this.physics.add.existing(this.p);this.p.body.setCollideWorldBounds(true);"
-        "this.cursors=this.input.keyboard.createCursorKeys();"
-        "this.enemies=this.physics.add.group();"
-        "for(let i=0;i<5;i++){let e=this.add.rectangle(Phaser.Math.Between(50,750),Phaser.Math.Between(50,300),24,24,0xff00e5);"
-        "this.physics.add.existing(e);e.body.setVelocity(Phaser.Math.Between(-100,100),Phaser.Math.Between(-100,100));"
-        "e.body.setBounce(1,1);e.body.setCollideWorldBounds(true);this.enemies.add(e);}"
-        "this.score=0;this.scoreText=this.add.text(20,50,'SCORE: 0',{color:'#00F0FF',fontFamily:'monospace',fontSize:'18px'});"
-        "this.physics.add.overlap(this.p,this.enemies,()=>{this.scene.restart();});"
-        "}"
-        "update(){"
-        "if(this.cursors.left.isDown)this.p.body.setVelocityX(-200);"
-        "else if(this.cursors.right.isDown)this.p.body.setVelocityX(200);"
-        "else this.p.body.setVelocityX(0);"
-        "if(this.cursors.up.isDown)this.p.body.setVelocityY(-200);"
-        "else if(this.cursors.down.isDown)this.p.body.setVelocityY(200);"
-        "else this.p.body.setVelocityY(0);"
-        "this.score+=1;this.scoreText.setText('SCORE: '+this.score);"
-        "}"
-        "}"
-        "new Phaser.Game({type:Phaser.AUTO,width:800,height:600,backgroundColor:'#0A0A0F',"
-        "physics:{default:'arcade',arcade:{gravity:{y:0}}},scene:Main});"
-        "</script></body></html>"
-    )
+    idea_lower = idea.lower()
+
+    # Determine genre-specific mechanics from idea keywords
+    is_shooter = any(w in idea_lower for w in ["shooter", "space", "laser", "bullet", "gun", "fire", "ship"])
+    is_gravity = any(w in idea_lower for w in ["gravity", "flip", "inv", "jump", "fall"])
+    is_runner = any(w in idea_lower for w in ["runner", "parkour", "dash", "run", "evade", "courier"])
+
+    bg_color = "#050B14" if is_space_theme := "space" in idea_lower else "#0A0A0F"
+    player_color = "0x00f0ff" if is_runner else "0x00ff41"
+
+    js_logic = f"""
+    class MainScene extends Phaser.Scene {{
+        constructor() {{ super('MainScene'); }}
+        create() {{
+            this.add.text(20, 20, "PROTOTYPE :: {safe_idea}", {{ color: '#00FF41', fontFamily: 'monospace', fontSize: '16px' }});
+            this.score = 0;
+            this.gravityFlipped = false;
+            this.scoreText = this.add.text(20, 45, "SCORE: 0", {{ color: '#00F0FF', fontFamily: 'monospace', fontSize: '18px' }});
+            this.infoText = this.add.text(20, 70, "CONTROLS: ARROWS / WASD {"+ (is_shooter ? " + SPACE TO SHOOT" : "") +"}", {{ color: '#FF00E5', fontFamily: 'monospace', fontSize: '13px' }});
+
+            // Player Setup
+            this.player = this.add.rectangle(400, {500 if is_shooter or is_runner else 300}, 32, 32, {player_color});
+            this.physics.add.existing(this.player);
+            this.player.body.setCollideWorldBounds(true);
+
+            // Groups
+            this.enemies = this.physics.add.group();
+            this.bullets = this.physics.add.group();
+
+            // Spawn Enemies
+            this.time.addEvent({{ delay: 1200, callback: this.spawnEnemy, callbackScope: this, loop: true }});
+
+            // Controls
+            this.cursors = this.input.keyboard.createCursorKeys();
+            this.wasd = this.input.keyboard.addKeys({{ up: 'W', left: 'A', down: 'S', right: 'D', space: 'SPACE' }});
+
+            // Collisions
+            this.physics.add.overlap(this.player, this.enemies, this.hitPlayer, null, this);
+            this.physics.add.overlap(this.bullets, this.enemies, this.hitEnemy, null, this);
+        }}
+
+        spawnEnemy() {{
+            let x = Phaser.Math.Between(50, 750);
+            let y = {"50" if is_shooter else "Phaser.Math.Between(50, 400)"};
+            let enemy = this.add.rectangle(x, y, 26, 26, 0xff00e5);
+            this.physics.add.existing(enemy);
+            enemy.body.setVelocity(Phaser.Math.Between(-80, 80), {"Phaser.Math.Between(60, 140)" if is_shooter else "Phaser.Math.Between(-100, 100)"});
+            enemy.body.setBounce(1, 1);
+            enemy.body.setCollideWorldBounds(true);
+            this.enemies.add(enemy);
+        }}
+
+        hitPlayer(player, enemy) {{
+            this.cameras.main.shake(200, 0.02);
+            this.scene.restart();
+        }}
+
+        hitEnemy(bullet, enemy) {{
+            bullet.destroy();
+            enemy.destroy();
+            this.score += 100;
+            this.scoreText.setText("SCORE: " + this.score);
+            {"if (" + str(is_gravity).lower() + ") { this.gravityFlipped = !this.gravityFlipped; this.player.body.setGravityY(this.gravityFlipped ? -600 : 600); this.cameras.main.flash(200, 0, 240, 255); }" if is_gravity else ""}
+        }}
+
+        update() {{
+            let moveSpeed = 250;
+            let left = this.cursors.left.isDown || this.wasd.left.isDown;
+            let right = this.cursors.right.isDown || this.wasd.right.isDown;
+            let up = this.cursors.up.isDown || this.wasd.up.isDown;
+            let down = this.cursors.down.isDown || this.wasd.down.isDown;
+            let shoot = Phaser.Input.Keyboard.JustDown(this.cursors.space) || Phaser.Input.Keyboard.JustDown(this.wasd.space);
+
+            if (left) this.player.body.setVelocityX(-moveSpeed);
+            else if (right) this.player.body.setVelocityX(moveSpeed);
+            else this.player.body.setVelocityX(0);
+
+            if (up) this.player.body.setVelocityY(-moveSpeed);
+            else if (down) this.player.body.setVelocityY(moveSpeed);
+            else if (!{str(is_gravity).lower()}) this.player.body.setVelocityY(0);
+
+            if (shoot || {"true" if is_shooter else "false"} && (left||right||up||down)) {{
+                if (this.time.now > (this.lastShot || 0)) {{
+                    let bullet = this.add.rectangle(this.player.x, this.player.y - 18, 8, 16, 0x00f0ff);
+                    this.physics.add.existing(bullet);
+                    bullet.body.setVelocityY(-450);
+                    this.bullets.add(bullet);
+                    this.lastShot = this.time.now + 250;
+                }}
+            }}
+
+            // Clean up off-screen bullets
+            this.bullets.children.each(b => {{ if (b && b.y < -20) b.destroy(); }});
+        }}
+    }}
+
+    const config = {{
+        type: Phaser.AUTO,
+        width: 800,
+        height: 600,
+        backgroundColor: '{bg_color}',
+        physics: {{ default: 'arcade', arcade: {{ gravity: {{ y: {600 if is_gravity else 0} }} }} }},
+        scene: MainScene
+    }};
+    new Phaser.Game(config);
+    """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>QuantumForge Prototype :: {safe_idea}</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.70.0/dist/phaser.min.js"></script>
+    <style>body {{ margin: 0; background: {bg_color}; color: #00FF41; font-family: monospace; overflow: hidden; }}</style>
+</head>
+<body>
+    <script>{js_logic}</script>
+</body>
+</html>"""
